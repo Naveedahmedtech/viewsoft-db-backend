@@ -1,0 +1,554 @@
+const db = require("../models").db;
+const Annotation = db.annotation;
+const Op = db.Sequelize.Op;
+
+// Specify the attributes you want to include or exclude
+const attributes = {
+  exclude: ["isDeleted", "createdAt", "updatedAt"]
+}
+
+/**
+ * Annotation Controller
+ * - Validates input without external libs
+ * - Accepts data as object OR stringified JSON; normalizes to object
+ * - Uses authenticated user for createdBy if available
+ * - Truncates logs to avoid leaking large/sensitive payloads
+ */
+
+/**
+ * @swagger
+ * /api/annotation:
+ *   post:
+ *     summary: Creates a new annotation
+ *     description: Creates a new annotation with the provided data.
+ *     tags:
+ *       - Annotation
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - projId
+ *               - docId
+ *               - data
+ *             properties:
+ *               projId:
+ *                 type: integer
+ *                 description: Project ID associated with the annotation.
+ *                 example: 1
+ *               docId:
+ *                 type: string
+ *                 description: Document identifier or path for the annotation.
+ *                 example: "C:\\Rasterex\\RxView360Server\\bin\\cache\\98757dds-sd999\\98757dds-sd999.pdf"
+ *               roomId:
+ *                 type: string
+ *                 description: Optional room/channel ID (for collaborative sessions).
+ *                 example: "room-42"
+ *               data:
+ *                 oneOf:
+ *                   - type: object
+ *                     description: Annotation payload as JSON.
+ *                   - type: string
+ *                     description: Annotation payload serialized as a JSON string.
+ *                     example: "{\"operation\":{\"created\":true},\"Entity\":{\"ID\":2}}"
+ *               createdBy:
+ *                 type: integer
+ *                 description: (Deprecated) The ID of the user who created the annotation. Server derives this from auth.
+ *                 deprecated: true
+ *     responses:
+ *       201:
+ *         description: Annotation created successfully.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Annotation'
+ *       400:
+ *         description: Invalid input data.
+ *       401:
+ *         description: Unauthorized.
+ *       413:
+ *         description: Payload too large.
+ *       500:
+ *         description: Error creating annotation.
+ */
+
+const MAX_DOCID_LEN = 255;          // Align with DB column if applicable
+const MAX_ROOMID_LEN = 255;
+const MAX_LOG_PREVIEW_LEN = 80;
+
+// --- helpers (no external deps) ---
+function isInteger(value) {
+  return Number.isInteger(value);
+}
+
+function isPositiveInt(value) {
+  return isInteger(value) && value > 0;
+}
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isNonEmptyStringMax(value, max) {
+  return isNonEmptyString(value) && value.length <= max;
+}
+
+function tryParseJson(str) {
+  try {
+    return { ok: true, value: JSON.parse(str) };
+  } catch (e) {
+    return { ok: false, error: e };
+  }
+}
+
+function collectValidationErrors(body) {
+  const errors = [];
+
+  // projId
+  if (body.projId === undefined || body.projId === null) {
+    errors.push({ path: 'projId', message: 'projId is required' });
+  } else if (!isPositiveInt(body.projId)) {
+    errors.push({ path: 'projId', message: 'projId must be a positive integer' });
+  }
+
+  // docId
+  if (!isNonEmptyString(body.docId)) {
+    errors.push({ path: 'docId', message: 'docId is required and must be a non-empty string' });
+  } else if (!isNonEmptyStringMax(body.docId, MAX_DOCID_LEN)) {
+    errors.push({ path: 'docId', message: `docId must be at most ${MAX_DOCID_LEN} characters` });
+  }
+
+  // roomId (optional)
+  if (body.roomId !== undefined && body.roomId !== null) {
+    if (!isNonEmptyString(body.roomId)) {
+      errors.push({ path: 'roomId', message: 'roomId, if provided, must be a non-empty string' });
+    } else if (!isNonEmptyStringMax(body.roomId, MAX_ROOMID_LEN)) {
+      errors.push({ path: 'roomId', message: `roomId must be at most ${MAX_ROOMID_LEN} characters` });
+    }
+  }
+
+  // data (object or stringified JSON)
+  if (body.data === undefined || body.data === null) {
+    errors.push({ path: 'data', message: 'data is required (object or valid JSON string)' });
+  } else if (!(typeof body.data === 'object' && !Array.isArray(body.data)) && typeof body.data !== 'string') {
+    errors.push({ path: 'data', message: 'data must be an object or a JSON string' });
+  }
+
+  return errors;
+}
+
+function makeLogPreview({ projId, docId, roomId, data }) {
+  const docPreview = docId && docId.length > MAX_LOG_PREVIEW_LEN
+    ? docId.slice(0, MAX_LOG_PREVIEW_LEN - 3) + '...'
+    : docId;
+
+  let dataKeys = [];
+  try {
+    const obj = typeof data === 'string' ? JSON.parse(data) : data;
+    if (obj && typeof obj === 'object') dataKeys = Object.keys(obj).slice(0, 8);
+  } catch (_) {
+    // ignore parse errors in preview
+  }
+
+  return JSON.stringify({
+    projId,
+    docId: docPreview,
+    roomId,
+    dataKeys
+  });
+}
+
+
+// --- controller ---
+exports.create = async (req, res) => {
+  try {
+    // If you require auth, uncomment and adapt:
+    // if (!req.session?.userId) {
+    //   return res.status(401).send('You are not logged in');
+    // }
+
+    // Basic validation
+    const validationErrors = collectValidationErrors(req.body || {});
+    if (validationErrors.length) {
+      return res.status(400).json({
+        message: 'Invalid request body',
+        errors: validationErrors
+      });
+    }
+
+    const { projId, docId, roomId } = req.body;
+    let { data } = req.body;
+
+    // Normalize data: parse stringified JSON into an object
+    if (typeof data === 'string') {
+      const parsed = tryParseJson(data);
+      if (!parsed.ok || !(parsed.value && typeof parsed.value === 'object' && !Array.isArray(parsed.value))) {
+        return res.status(400).json({
+          message: 'The "data" field must be valid JSON representing an object.'
+        });
+      }
+      data = parsed.value;
+    }
+
+    // Optional extra rule: ensure it's a PDF path/id (customize to your needs)
+    // if (!/\.pdf(\?.*)?$/i.test(docId)) {
+    //   return res.status(400).json({ message: 'docId must reference a PDF' });
+    // }
+
+    // Safe, truncated logging
+    console.log(`Creating annotation with: ${makeLogPreview({ projId, docId, roomId, data })}`);
+
+    // Derive createdBy from auth context rather than trusting body (body.createdBy is ignored)
+    const createdBy = req.session?.userId ?? null;
+
+    // Persist — recommend JSON/JSONB column for "data"
+    // If your column is TEXT, replace `data` with `JSON.stringify(data)`
+    const anno = await Annotation.create({
+      projId,
+      docId,
+      roomId: roomId || null,
+      data,          // Sequelize.JSON/JSONB preferred
+      createdBy
+    });
+
+    // Strip server-only fields before returning
+    if (anno?.dataValues) {
+      delete anno.dataValues.isDeleted;
+    }
+
+    return res.status(201).json(anno);
+  } catch (err) {
+    console.error('Create annotation error:', err);
+    return res.status(500).json({
+      message: 'Some error occurred while creating the annotation.'
+    });
+  }
+};
+
+
+/**
+ * @swagger
+ * /api/annotations:
+ *   get:
+ *     summary: Retrieves all annotations
+ *     description: Retrieves a list of annotations filtered by project ID and not deleted.
+ *     tags:
+ *       - Annotation
+ *     parameters:
+ *       - in: query
+ *         name: projId
+ *         schema:
+ *           type: integer
+ *         description: Filter annotations by project ID.
+ *         example: 1
+ *       - in: query
+ *         name: docId
+ *         schema:
+ *           type: VARCHAR(255)
+ *         description: Filter annotations by doc ID.
+ *         example: 'doc_id_01'
+ *     responses:
+ *       200:
+ *         description: A list of annotations was retrieved successfully.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 $ref: '#/components/schemas/Annotation'
+ *       500:
+ *         description: Internal server error while retrieving annotations.
+ */
+exports.findAll = (req, res) => {
+  const projId = req.query.projId;
+  const docId = req.query.docId;
+  const roomId = req.query.roomId; // roomId is optional
+  const condition1 = projId ? { projId: projId } : null;
+  const condition2 = docId ? { docId: docId } : null;
+  const condition3 = { isDeleted: {[Op.not]: true} };
+  const condition4 = roomId !== undefined ? { roomId: roomId } : null;
+
+  Annotation.findAll({ where: { [Op.and] : [ condition1, condition2, condition3, condition4 ] }, attributes })
+    .then(data => {
+      res.send(data);
+    })
+    .catch(err => {
+      res.status(500).send({
+        message:
+          err.message || "Some error occurred while retrieving annotations."
+      });
+    });
+};
+
+/**
+ * @swagger
+ * /api/annotations/{id}:
+ *   get:
+ *     summary: Retrieves a single annotation by ID
+ *     description: Retrieves a single annotation by its unique ID.
+ *     tags:
+ *       - Annotation
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         description: ID of the annotation to retrieve
+ *         schema:
+ *           type: integer
+ *           example: 1
+ *     responses:
+ *       200:
+ *         description: Successful retrieval of the annotation
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Annotation'
+ *       400:
+ *         description: Invalid ID supplied
+ *       404:
+ *         description: Annotation not found
+ *       500:
+ *         description: Internal server error
+ */
+exports.get = (req, res) => {
+  const id = req.params.id?.trim();
+
+  if (!id) {
+    return res.status(400).send({
+      message: "Please provide annotation id."
+    });
+  }
+  const condition = { isDeleted: {[Op.not]: true} };
+
+  Annotation.findByPk(id, { where: condition, attributes })
+    .then(data => {
+      if (data) {
+        res.send(data);
+      } else {
+        res.status(404).send({ message: `Annotation with id=${id} was not found.` });
+      }
+    })
+    .catch(err => {
+      res.status(500).send({ message: `Error retrieving annotation with id=${id}` });
+    });
+};
+
+/**
+ * @swagger
+ * /api/annotations/{id}:
+ *   patch:
+ *     summary: Updates an annotation by ID
+ *     description: Updates an annotation, allowing modification of the `data` field only.
+ *     tags:
+ *       - Annotation
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         description: ID of the annotation to update
+ *         schema:
+ *           type: integer
+ *           example: 1
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               data:
+ *                 type: string
+ *                 description: The new data for the annotation.
+ *                 example: '{"key": "new_value"}'
+ *     responses:
+ *       200:
+ *         description: Annotation updated successfully.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Annotation'
+ *       400:
+ *         description: Invalid ID supplied or invalid data.
+ *       404:
+ *         description: Annotation not found.
+ *       500:
+ *         description: Internal server error while updating annotation.
+ */
+exports.update = async (req, res) => {
+  const idStr = req.params.id?.trim();
+  const id = parseInt(idStr);
+  if (isNaN(id)) {
+    res.status(400).send({
+      message: `Bad request! Expected to get a number, but get '${idStr}'`
+    });
+    return;
+  }
+
+  // Find annotation by id
+  const existingAnno = await Annotation.findOne({ where: { id } });
+  if (!existingAnno) {
+    res.status(404).send({
+      message: `Annotation with id '${id}' was not found.`
+    });
+    return;
+  }
+
+  // caller should be only able to update `data` field
+  const body = {
+    data: req.body.data,
+  }
+
+  Annotation.update(body, { where: { id }, attributes})
+    .then(num => {
+      if (num == 1) {
+        Annotation.findByPk(id, attributes)
+          .then(data => {
+            if (data) {
+              delete data.dataValues.isDeleted;
+              res.send(data);
+            } else {
+              res.status(404).send({
+                message: `Annotation with id=${id} was not found.`
+              });
+            }
+          });
+      } else {
+        res.send({
+          message: `Cannot update Annotation with id=${id}. Maybe annotation was not found or req.body is empty!`
+        });
+      }
+    })
+    .catch(err => {
+      res.status(500).send({
+        message: "Error updating Annotation with id=" + id
+      });
+    });
+};
+
+/**
+ * @swagger
+ * /api/annotations/{id}:
+ *   delete:
+ *     summary: Deletes an annotation by ID
+ *     description: Soft deletes an annotation by setting `isDeleted` to true.
+ *     tags:
+ *       - Annotation
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         description: ID of the annotation to delete
+ *         schema:
+ *           type: integer
+ *           example: 1
+ *     responses:
+ *       200:
+ *         description: Annotation deleted successfully.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: "Annotation was deleted successfully!"
+ *       400:
+ *         description: Invalid ID supplied.
+ *       404:
+ *         description: Annotation not found.
+ *       500:
+ *         description: Internal server error while deleting annotation.
+ */
+exports.delete = async (req, res) => {
+  const idStr = req.params.id?.trim();
+  const id = parseInt(idStr);
+  if (isNaN(id)) {
+    res.status(400).send({
+      message: `Bad request! Expected to get a number, but get '${idStr}'`
+    });
+    return;
+  }
+
+  // Find annotation by id
+  let existingAnno = await Annotation.findOne({ where: { id } });
+  if (!existingAnno) {
+    res.status(404).send({
+      message: `Annotation with id '${id}' was not found.`
+    });
+    return;
+  }
+  existingAnno = existingAnno.dataValues;
+  if (existingAnno.isDeleted) {
+    res.status(404).send({
+      message: `Annotation with id '${id}' was deleted already.`
+    });
+    return;
+  }
+
+  // should only update `isDeleted` field
+  const body = {
+    isDeleted: true,
+  }
+
+  Annotation.update(body, { where: { id }, attributes})
+  // Annotation.destroy({ where: { id: id }, condition})
+    .then(num => {
+      if (num == 1) {
+        res.send({
+          message: "Annotation was deleted successfully!"
+        });
+      } else {
+        res.send({
+          message: `Cannot delete Annotation with id=${id}. Maybe annotation was not found!`
+        });
+      }
+    })
+    .catch(err => {
+      res.status(500).send({
+        message: "Could not delete annotation with id=" + id
+      });
+    });
+};
+
+// Delete all annotations from the database.
+// exports.deleteAll = (req, res) => {
+//   Annotation.destroy({
+//     where: {},
+//     truncate: false
+//   })
+//     .then(nums => {
+//       res.send({ message: `${nums} Users were deleted successfully!` });
+//     })
+//     .catch(err => {
+//       res.status(500).send({
+//         message:
+//           err.message || "Some error occurred while removing all users."
+//       });
+//     });
+// };
+
+exports.deleteAll = async (req, res) => {
+  const projId = req.query.projId;
+  const docId = req.query.docId;
+  const roomId = req.query.roomId; // roomId is optional
+  const condition1 = projId ? { projId: projId } : null;
+  const condition2 = docId ? { docId: docId } : null;
+  const condition3 = roomId !== undefined ? { roomId: roomId } : null;
+
+  Annotation.destroy({
+    where: { [Op.and] : [ condition1, condition2, condition3 ] },
+    truncate: false
+  })
+    .then(nums => {
+      res.send({ deleteCount: nums, message: `${nums} annotations were deleted successfully!` });
+    })
+    .catch(err => {
+      res.status(500).send({
+        deleteCount: -1,
+        message:
+          err.message || "Some error occurred while removing all users."
+      });
+    });
+};
