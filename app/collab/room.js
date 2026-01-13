@@ -496,8 +496,17 @@ async function pollForNewEvents() {
     }
 }
 
-// Start the polling process
-pollForNewEvents();
+// Start polling after ensuring the event log table exists.
+const startEventPolling = async () => {
+    try {
+        await db.annotation_event_log.sync();
+        pollForNewEvents();
+    } catch (error) {
+        console.error("Failed to sync annotation_event_log; event polling disabled:", error);
+    }
+};
+
+startEventPolling();
 
 }
 

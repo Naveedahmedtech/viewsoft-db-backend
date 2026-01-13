@@ -12,6 +12,7 @@ function initDB(type) {
     host: dbConfig.host,
     port: dbConfig.port,
     dialect: dbConfig.dialect,
+    dialectOptions: dbConfig.dialectOptions, // ensures SSL (required by Azure PG)
     pool: {
       max: dbCfg.pool.max,
       min: dbCfg.pool.min,
@@ -20,6 +21,7 @@ function initDB(type) {
     },
     logging: false,
   };
+
   const sequelize = new Sequelize(dbConfig.database, dbConfig.username, dbConfig.password, sequelizeOptions);
 
 
@@ -37,6 +39,7 @@ function initDB(type) {
   db.stamp_template = require("./stamp_template.model.js")(sequelize, Sequelize);
   db.symbol_folder = require("./symbol_folder.model.js")(sequelize, Sequelize);
   db.symbol = require("./symbol.model.js")(sequelize, Sequelize);
+  db.user_pdf = require("./user_pdf.model.js")(sequelize, Sequelize);
 
 
   console.log("DB initialized");

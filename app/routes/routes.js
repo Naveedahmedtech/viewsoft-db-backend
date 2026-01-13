@@ -10,6 +10,7 @@ module.exports = (app) => {
   const stampTemplate = require("../controllers/stamp_template.controller.js");
   const symbolFolder = require("../controllers/symbol_folder.controller.js");
   const symbol = require("../controllers/symbol.controller.js");
+  const userPdf = require("../controllers/user_pdf.controller.js");
 
 
   let router = require("express").Router();
@@ -116,6 +117,10 @@ module.exports = (app) => {
   router.get("/symbol/folders/:folderId/symbols", [authJwt.verifyToken], symbol.findAllByFolder);
   router.get("/symbol/symbols/:id", [authJwt.verifyToken], symbol.findOne);
   router.delete("/symbol/symbols/:id", [authJwt.verifyToken], symbol.delete);
+
+  // User PDFs
+  router.get("/user-pdfs", [authJwt.verifyToken], userPdf.findAll);
+  router.post("/user-pdfs", [authJwt.verifyToken], userPdf.create);
 
 
   // Catch-all route for any unmatched requests
