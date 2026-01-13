@@ -8,13 +8,30 @@ const path = require("path");
 
 const app = express();
 
+// CORS configuration via environment variables:
+// - CORS_ORIGINS (comma-separated) or CORS_ALLOWED_ORIGINS, or '*' (default: '*')
+// - CORS_METHODS (default: "GET, POST, PUT, DELETE, PATCH, OPTIONS")
+// - CORS_ALLOWED_HEADERS (default: "Content-Type, Authorization")
+// - CORS_CREDENTIALS (true/false; default: false)
+const corsOriginsEnv = process.env.CORS_ORIGINS || process.env.CORS_ALLOWED_ORIGINS || "";
+let originOption = "*";
+if (corsOriginsEnv && corsOriginsEnv.trim() !== "") {
+  if (corsOriginsEnv.trim() === "*") {
+    originOption = "*";
+  } else {
+    const list = corsOriginsEnv.split(",").map((s) => s.trim()).filter(Boolean);
+    originOption = list.length === 1 ? list[0] : list;
+  }
+}
+
 const corsOptions = {
-  // origin: ["https://assemble-angular.viewsoft.io", "https://issue.viewsoft.com", "http://localhost:4200", "http://localhost:5173"],
-  origin: "*",
-  methods: "GET, POST, PUT, DELETE, PATCH, OPTIONS",
-  //allowedHeaders: "Content-Type, Authorization",
-  //credentials: true,
+  origin: originOption,
+  methods: process.env.CORS_METHODS || "GET, POST, PUT, DELETE, PATCH, OPTIONS",
+  allowedHeaders: process.env.CORS_ALLOWED_HEADERS || "Content-Type, Authorization",
+  credentials: String(process.env.CORS_CREDENTIALS || "false").toLowerCase() === "true",
 };
+
+console.log("CORS origin configured:", Array.isArray(corsOptions.origin) ? corsOptions.origin.join(",") : corsOptions.origin);
 
 app.use(cors(corsOptions));
 
