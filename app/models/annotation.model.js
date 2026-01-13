@@ -43,6 +43,7 @@ module.exports = (sequelize, Sequelize) => {
     isDeleted: {
       type: Sequelize.BOOLEAN,
       field: "is_deleted",
+      defaultValue: false
     },
     createdAt: {
       type: Sequelize.DATE,

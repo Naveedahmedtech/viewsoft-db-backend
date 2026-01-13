@@ -131,16 +131,20 @@ exports.create = (req, res) => {
  *         description: Internal server error while retrieving annotations.
  */
 exports.findAll = (req, res) => {
+  console.log("FIND ALL API CALL! ")
   const projId = req.query.projId;
   const docId = req.query.docId;
   const roomId = req.query.roomId; // roomId is optional
   const condition1 = projId ? { projId: projId } : null;
   const condition2 = docId ? { docId: docId } : null;
-  const condition3 = { isDeleted: {[Op.not]: true} };
+  const condition3 = { isDeleted: { [Op.or]: [false, null] } };
   const condition4 = roomId !== undefined ? { roomId: roomId } : null;
 
-  Annotation.findAll({ where: { [Op.and] : [ condition1, condition2, condition3, condition4 ] }, attributes })
+  Annotation.findAll({ where: { [Op.and]: [condition1, condition2, condition3, condition4] }, attributes })
     .then(data => {
+      res.header("Cache-Control", "no-cache, no-store, must-revalidate");
+      res.header("Pragma", "no-cache");
+      res.header("Expires", "0");
       res.send(data);
     })
     .catch(err => {
@@ -189,7 +193,7 @@ exports.get = (req, res) => {
       message: "Please provide annotation id."
     });
   }
-  const condition = { isDeleted: {[Op.not]: true} };
+  const condition = { isDeleted: { [Op.not]: true } };
 
   Annotation.findByPk(id, { where: condition, attributes })
     .then(data => {
@@ -269,7 +273,7 @@ exports.update = async (req, res) => {
     data: req.body.data,
   }
 
-  Annotation.update(body, { where: { id }, attributes})
+  Annotation.update(body, { where: { id }, attributes })
     .then(num => {
       if (num == 1) {
         Annotation.findByPk(id, attributes)
@@ -361,8 +365,8 @@ exports.delete = async (req, res) => {
     isDeleted: true,
   }
 
-  Annotation.update(body, { where: { id }, attributes})
-  // Annotation.destroy({ where: { id: id }, condition})
+  Annotation.update(body, { where: { id } })
+    // Annotation.destroy({ where: { id: id }, condition})
     .then(num => {
       if (num == 1) {
         res.send({
@@ -407,7 +411,7 @@ exports.deleteAll = async (req, res) => {
   const condition3 = roomId !== undefined ? { roomId: roomId } : null;
 
   Annotation.destroy({
-    where: { [Op.and] : [ condition1, condition2, condition3 ] },
+    where: { [Op.and]: [condition1, condition2, condition3] },
     truncate: false
   })
     .then(nums => {

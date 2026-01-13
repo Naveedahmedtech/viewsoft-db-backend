@@ -8,27 +8,18 @@ const path = require("path");
 
 const app = express();
 
-// CORS configuration via environment variables:
-// - CORS_ORIGINS (comma-separated) or CORS_ALLOWED_ORIGINS, or '*' (default: '*')
-// - CORS_METHODS (default: "GET, POST, PUT, DELETE, PATCH, OPTIONS")
-// - CORS_ALLOWED_HEADERS (default: "Content-Type, Authorization")
-// - CORS_CREDENTIALS (true/false; default: false)
-const corsOriginsEnv = process.env.CORS_ORIGINS || process.env.CORS_ALLOWED_ORIGINS || "";
-let originOption = "*";
-if (corsOriginsEnv && corsOriginsEnv.trim() !== "") {
-  if (corsOriginsEnv.trim() === "*") {
-    originOption = "*";
-  } else {
-    const list = corsOriginsEnv.split(",").map((s) => s.trim()).filter(Boolean);
-    originOption = list.length === 1 ? list[0] : list;
-  }
-}
-
+// CORS configuration:
+// We allow all origins by reflecting the request origin.
+// This is more robust than '*' especially when credentials/custom headers are involved.
 const corsOptions = {
-  origin: originOption,
-  methods: process.env.CORS_METHODS || "GET, POST, PUT, DELETE, PATCH, OPTIONS",
-  allowedHeaders: process.env.CORS_ALLOWED_HEADERS || "Content-Type, Authorization",
-  credentials: String(process.env.CORS_CREDENTIALS || "false").toLowerCase() === "true",
+  origin: function (origin, callback) {
+    // allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    return callback(null, true);
+  },
+  methods: "GET, POST, PUT, DELETE, PATCH, OPTIONS",
+  allowedHeaders: "Origin, X-Requested-With, Content-Type, Accept, Authorization, x-access-token, Cache-Control, Pragma",
+  credentials: true,
 };
 
 console.log("CORS origin configured:", Array.isArray(corsOptions.origin) ? corsOptions.origin.join(",") : corsOptions.origin);
