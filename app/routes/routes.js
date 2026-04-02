@@ -11,6 +11,7 @@ module.exports = (app) => {
   const symbolFolder = require("../controllers/symbol_folder.controller.js");
   const symbol = require("../controllers/symbol.controller.js");
   const userPdf = require("../controllers/user_pdf.controller.js");
+  const viewerExport = require("../controllers/viewer_export.controller.js");
 
 
   let router = require("express").Router();
@@ -121,6 +122,11 @@ module.exports = (app) => {
   // User PDFs
   router.get("/user-pdfs", [authJwt.verifyToken], userPdf.findAll);
   router.post("/user-pdfs", [authJwt.verifyToken], userPdf.create);
+
+  // Viewer exports
+  router.post("/viewer/exports/register", [authJwt.verifyToken], viewerExport.register);
+  router.post("/viewer/exports/download", [authJwt.verifyToken], viewerExport.download);
+  router.post("/viewer/exports/download-batch", [authJwt.verifyToken], viewerExport.downloadBatch);
 
 
   // Catch-all route for any unmatched requests

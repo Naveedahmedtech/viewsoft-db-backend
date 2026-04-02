@@ -40,6 +40,7 @@ function initDB(type) {
   db.symbol_folder = require("./symbol_folder.model.js")(sequelize, Sequelize);
   db.symbol = require("./symbol.model.js")(sequelize, Sequelize);
   db.user_pdf = require("./user_pdf.model.js")(sequelize, Sequelize);
+  db.viewer_export = require("./viewer_export.model.js")(sequelize, Sequelize);
 
 
   console.log("DB initialized");
